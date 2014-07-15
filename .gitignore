@@ -1,8 +1,7 @@
-sting files
-skeleton.py[cod]
+# existing files
+skeleton.py[cod~]
 
 # Byte-compiled / optimized / DLL files
-__pycache__/
 *.py[cod~]
 
 # C extensions
@@ -54,3 +53,7 @@ coverage.xml
 
 # Sphinx documentation
 docs/_build/
+<<<<<<< HEAD
+=======
+
+>>>>>>> 6429da5875833ea6f56c34c3412a38676ec0afd8
