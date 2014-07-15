@@ -1,5 +1,5 @@
 # existing files
-skeleton.py[cod~]
+skeleton.py*
 README
 
 # Byte-compiled / optimized / DLL files

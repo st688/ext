@@ -23,6 +23,9 @@ LATENCY_MAX    = 1000000
 OUTPUT_PATH_FILENAME  = "paths"
 INPUT_CONFIG_FILENAME = "config"
 
+USE_VLAN_TAG         = True
+USE_ETHERNET_SRC_TAG = False
+
 # probe protocol, only timestamp field
 class ProbeProto(packet_base):
   "Probe protocol packet struct"
@@ -217,8 +220,10 @@ class MyExplorer(object):
         path = self.path_id_table[pid]
         if len(path) > 3:
           # It is not the last sw, tag it and send into the network
-          # msg.actions.append( of.ofp_action_vlan_vid( vlan_vid = pid ) )
-          msg.actions.append( of.ofp_action_dl_addr.set_src( EthAddr( self._int_to_MAC( pid ) ) ) )
+          if USE_VLAN_TAG:
+            msg.actions.append( of.ofp_action_vlan_vid( vlan_vid = pid ) )
+          if USE_ETHERNET_SRC_TAG:
+            msg.actions.append( of.ofp_action_dl_addr.set_src( EthAddr( self._int_to_MAC( pid ) ) ) )
           msg.actions.append( of.ofp_action_output( port = self.ports[path[1]][path[2]] ) )
         elif len(path) == 3:
           # last sw, forward to the host
@@ -250,8 +255,12 @@ class MyExplorer(object):
   def _set_path_on_swtiches (self, pid, path):
     for k, sw in enumerate(path):
       msg = of.ofp_flow_mod()
-      # msg.match.dl_vlan = pid
-      msg.match.dl_src = EthAddr( self._int_to_MAC( pid ) ) # match ethernet addr
+
+      if USE_VLAN_TAG:
+        msg.match.dl_vlan = pid
+      if USE_ETHERNET_SRC_TAG:
+        msg.match.dl_src = EthAddr( self._int_to_MAC( pid ) ) # match ethernet addr
+
       if k < 1:
         # First one, host
         continue
@@ -262,15 +271,17 @@ class MyExplorer(object):
       if k == len(path) - 2:
         # sw -> host
         
-        # strip vlan tag then send to host
-        #msg.actions.append(
-        #  of.ofp_action_strip_vlan()
-        #)
-        
-        # add back the real src
-        msg.actions.append(
-          of.ofp_action_dl_addr.set_src( EthAddr(path[0]) ) 
-        )
+        if USE_VLAN_TAG:
+          # strip vlan tag then send to host
+          msg.actions.append(
+            of.ofp_action_strip_vlan()
+          )
+        if USE_ETHERNET_SRC_TAG:
+          # add back the real src
+          msg.actions.append(
+            of.ofp_action_dl_addr.set_src( EthAddr(path[0]) ) 
+          )
+
         msg.actions.append(
           of.ofp_action_output( port = self.hadj[path[k+1]][sw] )
         )
@@ -374,7 +385,7 @@ class MyExplorer(object):
     )
 
   def latency(self):
-    # Find link latencies and write inteo self.adj
+    # Find link latencies and write into self.adj
     log.warning("Start latency test, please wait ...")
     self.lat_test = True
     self._clear_all_paths_for_all_switches()
