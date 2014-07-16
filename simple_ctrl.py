@@ -198,7 +198,12 @@ class MyExplorer(object):
           id_list = self.sd_path_table[src][dst]
           # last one, in case not found
           pid = len(id_list) - 1
-          rand_num = random.random()
+          
+          sum_of_all = 0
+          for x in id_list:
+            sum_of_all += self.config.now_config[x-1]
+          
+          rand_num = sum_of_all * random.random()
           for x in id_list:
             rand_num -= self.config.now_config[x-1]  # Since the path ID starts from 1, which is different from the index
             if rand_num < 0:
