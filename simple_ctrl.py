@@ -17,8 +17,9 @@ import random
 import struct
 
 log = core.getLogger()
-SYSTEM_TIMEOUT = 10000
-LATENCY_MAX    = 1000000
+SYSTEM_TIMEOUT    = 10000
+UPDATE_CHECK_STEP = 10
+LATENCY_MAX       = 1000000
 
 OUTPUT_PATH_FILENAME  = "paths"
 INPUT_CONFIG_FILENAME = "config"
@@ -48,12 +49,10 @@ class Configuration(object):
   def read_config(self, name):
     f = open(name).read()
     t = f.split('\n\n')
-    for k,step in enumerate(t):
-      t[k] = step.split('\n')
-      for m,line in enumerate(t[k]):
-        t[k][m] = line.split('\t')
-        for l,attr in enumerate(t[k][m]):
-          t[k][m][l] = float(attr)
+    for k,line in enumerate(t):
+      t[k] = line.split('\t')
+      for l,attr in enumerate(t[k]):
+        t[k][l] = float(attr)
 
     self.config = t
     self.config_set = True
@@ -196,15 +195,15 @@ class MyExplorer(object):
       
       if dst in self.hosts:
         if self.config.config_set:
-          id_list = self.config.now_config[self.sd_pair[src][dst]]
+          id_list = self.sd_path_table[src][dst]
           # last one, in case not found
           pid = len(id_list) - 1
           rand_num = random.random()
-          for k,x in enumerate(id_list):
-            rand_num -= x
+          for x in id_list:
+            rand_num -= self.config.now_config[x-1]  # Since the path ID starts from 1, which is different from the index
             if rand_num < 0:
               # path_id should start from 1
-              pid = k + 1
+              pid = x
               break
           log.warning("SD pair %i, pid %i", self.sd_pair[src][dst], pid) 
         else:
@@ -350,7 +349,7 @@ class MyExplorer(object):
       self.update_timer.cancel()
       log.warning("Updating Ends.")
       return
-    self.update_timer._interval = 100
+    self.update_timer._interval = UPDATE_CHECK_STEP
     self.config.change_step(self.update_step)
     log.warning("Update Step %i ...", self.update_step)
     self.update_step += 1
@@ -475,7 +474,7 @@ class MyExplorer(object):
     log.warning("Updating Starts.")
     self.update_step = 0
     self.config.read_config( INPUT_CONFIG_FILENAME )
-    self.update_timer = Timer(1, self._update_step, started = True, recurring = True)
+    self.update_timer = Timer( UPDATE_CHECK_STEP, self._update_step, started = True, recurring = True )
 
 def launch ():
   # Generate a explorer to handle the events
