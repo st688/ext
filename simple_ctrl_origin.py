@@ -5,7 +5,6 @@ from pox.lib.revent       import *
 from pox.lib.recoco       import Timer
 from pox.openflow.of_json import *
 from collections          import defaultdict
-from pox.lib.addresses    import IPAddr
 import ext.YenKSP.algorithms       as y_alg
 import ext.YenKSP.graph            as y_gra
 import pox.host_tracker
@@ -18,9 +17,9 @@ import random
 import struct
 
 log = core.getLogger()
-SYSTEM_TIMEOUT = 10000
+SYSTEM_TIMEOUT    = 10000
 UPDATE_CHECK_STEP = 10
-LATENCY_MAX    = 1000000
+LATENCY_MAX       = 1000000
 
 OUTPUT_PATH_FILENAME  = "paths"
 INPUT_CONFIG_FILENAME = "config"
@@ -44,9 +43,6 @@ class Configuration(object):
     # time -> ( [sd id][path]: amount )
     self.config = []
     self.now_config = defaultdict(lambda:defaultdict())
-    # The real sending configuration. We need this because of the discretization effect from ports
-    self.real_config = defaultdict(lambda:defaultdict())
-
     # Has the config been set?
     self.config_set = False
 
@@ -57,9 +53,8 @@ class Configuration(object):
       t[k] = line.split('\t')
       for l,attr in enumerate(t[k]):
         t[k][l] = float(attr)
-    
+
     self.config = t
-    self.real_config[m][l] = defaultdict(lambda:defaultdict())
     self.config_set = True
     self.change_step(0)
 
@@ -71,15 +66,6 @@ class Configuration(object):
     else:
       self.now_config = self.config[len(self.config)-1]
 
-  def compute_real_config(self, sd_pair_id, num_flow, flow_dist):
-    for key in self.real_config[sd_pair_id]:
-      if num_flow == 0:
-        return
-      elif flow_dist[key] is None:
-        self.real_config[sd_pair_id][key] = 0
-      else:
-        self.real_config[sd_pair_id][key] = float(len(flow_dist[key]))/float(num_flow)
-
 class MyExplorer(object):
   def __init__ (self):
     log.warning("MyExplorer Constructed.")
@@ -89,7 +75,7 @@ class MyExplorer(object):
 
     # Port map.  [sw1][sw2] -> the output port from sw1 to sw2
     self.ports = defaultdict(lambda:defaultdict(lambda:int))
-
+    
     # Switches we know of.  [dpid] -> Switch
     self.switches = set()
 
@@ -102,12 +88,6 @@ class MyExplorer(object):
     # self.path_id_table: Path ID -> Path table
     # self.sd_path_table: [Source][Destination] -> Path ID list
 
-    self.reset_srcport_tables()
-    # self.sd_srcport_table: [Source][Destination] -> Srcport list
-
-    self.reset_flowdist_tables()
-    # self.flow_dist_table: [sd_pair_id][path_id-1] -> Srcport distribution
-
     # Latency test function
     self.adj_test = []
     self.sw_test  = []
@@ -115,7 +95,7 @@ class MyExplorer(object):
     self.lat_test_timer = []
     # Does latency test Start?
     self.lat_test = False
-
+    
     # Update step
     self.update_step  = 0
     self.update_timer = []
@@ -147,9 +127,9 @@ class MyExplorer(object):
     self.adj[dp1][dp2] = 1
     self.ports[dp1][dp2] = p1
     log.warning(
-      "Link %s -> %s is discovered.",
-      dpid_to_str(dp1),
-      dpid_to_str(dp2)
+      "Link %s -> %s is discovered.", 
+      dpid_to_str(dp1), 
+      dpid_to_str(dp2) 
     )
 
   def __handle_host_tracker_HostEvent (self, event):
@@ -180,24 +160,6 @@ class MyExplorer(object):
     src = packet.src.toStr()
     dst = packet.dst.toStr()
 
-    # Extract IP information
-    ip   = packet.find('ipv4')
-    udpp = packet.find('udp')
-    if ip:
-      # it is not a good way to define a variable, anyway
-      srcip = ip.srcip
-      dstip = ip.dstip
-      self.srcip_table[src] = srcip
-      self.dstip_table[dst] = dstip
-      if udpp:
-        srcport = udpp.srcport
-        # Each src-dst pair has several ports
-        if srcport not in self.sd_srcport_table[src][dst]:
-          # New port discovered
-          self.sd_srcport_table[src][dst].append(srcport)
-          #print(self.sd_srcport_table[src][dst])
-
-    # Latency test packets handling
     if self.lat_test:
       if packet.type != 0x5566:
         # not test packet, drop it
@@ -208,7 +170,7 @@ class MyExplorer(object):
 
       timeinit, = struct.unpack('!I', packet.find('ethernet').payload)
       timediff = time.time()*1000 - self.system_time - timeinit
-
+      
       if src in self.adj_test:
         if dst in self.adj_test[src]:
           self.adj[src][dst] = timediff
@@ -220,7 +182,6 @@ class MyExplorer(object):
 
       return
 
-    # assign path id
     pid = 0
 
     if src in self.hosts:
@@ -231,75 +192,32 @@ class MyExplorer(object):
           pid = sd_path_id
           # log.warning("Packet Vid = %i", pid)
 
+      
       if dst in self.hosts:
-        if ip and udpp and self.config.config_set:
-	  # If the packet is an IP/UDP packet
-          sd_id = self.sd_pair[src][dst]
-          id_list = self.sd_path_table[src][dst]s
-          real_split = self.config.real_config[sd_id]
-          cur_dist = self.flow_dist_table[sd_id]
-          # last one, in case not found
-          pid = len(id_list) - 1
-          if srcport in cur_dist.values:
-            pid = self.get_pid_by_srcport(sd_id, srcport)
-          else:
-            for k,x in enumerate(id_list):
-              if x > real_split[k] or x == 1:
-                pid = k + 1
-                # update flow_dist_table and real_config_table
-                self.flow_dist_table[sd_id][k].append(srcport)
-                num_flow = len(self.sd_srcport_table[src][dst])
-                self.config.compute_real_config(sd_id, num_flow, cur_dist)
-                break
-          log.warning("SD pair %i, pid %i", self.sd_pair[src][dst], pid)
-
-        elif self.config.config_set:
+        if self.config.config_set:
           id_list = self.sd_path_table[src][dst]
           # last one, in case not found
           pid = len(id_list) - 1
-          rand_num = random.random()
-          for k,x in enumerate(id_list):
-            rand_num -= x
+          
+          sum_of_all = 0
+          for x in id_list:
+            sum_of_all += self.config.now_config[x-1]
+          
+          rand_num = sum_of_all * random.random()
+          for x in id_list:
+            rand_num -= self.config.now_config[x-1]  # Since the path ID starts from 1, which is different from the index
             if rand_num < 0:
               # path_id should start from 1
-              pid = k + 1
+              pid = x
               break
-          log.warning("SD pair %i, pid %i", self.sd_pair[src][dst], pid)
+          log.warning("SD pair %i, pid %i", self.sd_pair[src][dst], pid) 
         else:
           # FIXME: path selection
-          for sd_path_id in self.sd_path_table[src][dst]:
+          for sd_path_id in self.sd_path_table[src][dst]:    
             # There exists a path
             pid = sd_path_id
             # log.warning("Packet Vid = %i", pid)
 
-      if ip and udpp:
-        # FIXME: Do we need to modify the flow whenever the packet in?
-        msg = of.ofp_flow_mod()
-        msg.match.dl_type = 0x800
-        msg.match.nw_src = IPAddr(srcip)
-        msg.match.nw_dst = IPAddr(dstip)
-        msg.match.nw_proto = 17
-        msg.match.tp_src = srcport
-        log.warning(srcport)
-      else:
-        msg = of.ofp_packet_out(data = event.ofp)
-
-      if pid != 0:
-        # There exists a path
-        path = self.path_id_table[pid]
-        if len(path) > 3:
-        # It is not the last sw, tag it and send into the network
-          if USE_VLAN_TAG:
-            msg.actions.append( of.ofp_action_vlan_vid( vlan_vid = pid ) )
-          if USE_ETHERNET_SRC_TAG:
-            msg.actions.append( of.ofp_action_dl_addr.set_src( EthAddr( self._int_to_MAC( pid ) ) ) )
-          msg.actions.append( of.ofp_action_output( port = self.ports[path[1]][path[2]] ) )
-        elif len(path) == 3:
-          # last sw, forward to the host
-          #msg.actions.append( of.ofp_action_output( port = of.OFPP_FLOOD ) )
-          msg.actions.append( of.ofp_action_output( port = self.hadj[path[2]][path[1]] ) )
-
-      """
       msg = of.ofp_packet_out( data = event.ofp )
       if pid != 0:
         # There exists a path
@@ -315,15 +233,12 @@ class MyExplorer(object):
           # last sw, forward to the host
           # msg.actions.append( of.ofp_action_output( port = of.OFPP_FLOOD ) )
           msg.actions.append( of.ofp_action_output( port = self.hadj[path[2]][path[1]] ) )
-      """
 
       event.connection.send(msg)
-      #print msg
 
   def _handle_openflow_FlowStatsReceived (self, event):
     log.warning("Flow stats received.")
-    for x in flow_stats_to_list(event.stats):
-      log.warning( x )
+    log.warning(flow_stats_to_list(event.stats))
 
   def _handle_openflow_PortStatsReceived (self, event):
     log.warning("Port stats received.")
@@ -334,7 +249,7 @@ class MyExplorer(object):
   """
   def _clear_all_paths_for_all_switches (self):
     msg = of.ofp_flow_mod(command=of.OFPFC_DELETE)
-
+ 
     # iterate over all connected switches and delete all their flows
     for sw in self.switches:
       # _connections.values() before betta
@@ -353,13 +268,13 @@ class MyExplorer(object):
       if k < 1:
         # First one, host
         continue
-      if k > len(path)-2:
+      if k > len(path)-2: 
         # Last one, host
         continue
 
       if k == len(path) - 2:
         # sw -> host
-
+        
         if USE_VLAN_TAG:
           # strip vlan tag then send to host
           msg.actions.append(
@@ -368,7 +283,7 @@ class MyExplorer(object):
         if USE_ETHERNET_SRC_TAG:
           # add back the real src
           msg.actions.append(
-            of.ofp_action_dl_addr.set_src( EthAddr(path[0]) )
+            of.ofp_action_dl_addr.set_src( EthAddr(path[0]) ) 
           )
 
         msg.actions.append(
@@ -425,7 +340,7 @@ class MyExplorer(object):
       for s2 in self.adj_test[s1]:
         self.adj[s1][s2] = LATENCY_MAX
         log.warning("link %i -> %i timeout!", s1, s2)
-
+    
     for s1 in self.adj:
       for s2 in self.adj[s1]:
         self.adj[s1][s2] -= (self.sw_lat[s1] + self.sw_lat[s2])/2
@@ -433,7 +348,7 @@ class MyExplorer(object):
     self.lat_test_timer.cancel()
     self.lat_test = False
     log.warning("Latency test done.")
-
+  
   def _update_step(self):
     if self.update_step > len(self.config.config) - 1:
       self.update_timer.cancel()
@@ -441,59 +356,6 @@ class MyExplorer(object):
       return
     self.update_timer._interval = UPDATE_CHECK_STEP
     self.config.change_step(self.update_step)
-
-    # redistribute flows based on new configuration
-    for i in self.config.real_config:
-      for j in self.config.real_config[i]:
-        self.config.real_config[i][j] = 0.0
-    for sd_id in self.flow_dist_table:
-      for path in self.flow_dist_table[sd_id]:
-        self.flow_dist_table[sd_id][path] = []
-
-    for src in self.sd_srcport_table:
-      for dst in self.sd_srcport_table[src]:
-        sd_id = self.sd_pair[src][dst]
-        id_list = self.config.now_config[sd_id]
-        real_split = self.config.real_config[sd_id]
-        cur_dist = self.flow_dist_table[sd_id]
-        for srcport in self.sd_srcport_table[src][dst]:
-          # last one, in case not found
-          pid = len(id_list) - 1
-          for k,x in enumerate(id_list):
-            if x > real_split[k] or x == 1:
-              pid = k + 1
-              # update flow_dist_table and real_config_table
-              cur_dist[k].append(srcport)
-              num_flow = len(self.sd_srcport_table[src][dst])
-              self.config.compute_real_config(sd_id, num_flow, cur_dist)
-              # print 'compute_real_config', self.config.real_config[sd_id][k]
-              break
-
-          srcip = self.srcip_table[src]
-          dstip = self.dstip_table[dst]
-          msg = of.ofp_flow_mod(command = of.OFPFC_MODIFY_STRICT)
-          msg.match.dl_type = 0x800
-          msg.match.nw_src = IPAddr(srcip)
-          msg.match.nw_dst = IPAddr(dstip)
-          msg.match.nw_proto = 17
-          msg.match.tp_src = srcport
-          path = self.path_id_table[pid]
-          if len(path) > 3:
-            # It is not the last sw, tag it and send into the network
-            if USE_VLAN_TAG:
-              msg.actions.append( of.ofp_action_vlan_vid( vlan_vid = pid ) )
-            if USE_ETHERNET_SRC_TAG:
-              msg.actions.append( of.ofp_action_dl_addr.set_src( EthAddr( self._int_to_MAC( pid ) ) ) )
-            msg.actions.append( of.ofp_action_output( port = self.ports[path[1]][path[2]] ) )
-          elif len(path) == 3:
-            # last sw, forward to the host
-            # msg.actions.append( of.ofp_action_output( port = of.OFPP_FLOOD ) )
-            msg.actions.append( of.ofp_action_output( port = self.hadj[path[2]][path[1]] ) )
-          sw = path[1]
-          core.openflow.sendToDPID(sw, msg)
-          #print msg
-          log.warning("SD pair %i, pid %i", self.sd_pair[src][dst], pid)
-
     log.warning("Update Step %i ...", self.update_step)
     self.update_step += 1
 
@@ -513,24 +375,6 @@ class MyExplorer(object):
     self.path_id_table = defaultdict(lambda:[])
     # [Source][Destination] -> Path ID list
     self.sd_path_table = defaultdict(lambda:defaultdict(lambda:[]))
-
-  def reset_srcport_tables (self):
-    # [Source][Destination] -> Srcport list
-    self.sd_srcport_table = defaultdict(lambda:defaultdict(lambda:[]))
-    # [Source] -> srcip
-    self.srcip_table = defaultdict(lambda:[])
-    # [Destination] -> dstip
-    self.dstip_table = defaultdict(lambda:[])
-
-  def reset_flowdist_tables (self):
-    # [sd_pair_id][path_id-1] -> Srcport distribution
-    self.flow_dist_table = defaultdict(lambda:defaultdict(lambda:[]))
-
-  def get_pid_by_srcport (self, sd_pair_id, srcport):
-    for key, val in self.flow_dist_table[sd_pair_id].items():
-      if srcport in val:
-        return key
-    return None
 
   def port_stat (self, dpid):
     core.openflow.sendToDPID(
@@ -599,8 +443,6 @@ class MyExplorer(object):
 
     self._clear_all_paths_for_all_switches()
     self.reset_path_tables()
-    self.reset_flowdist_tables()
-    self.reset_srcport_tables()
 
     # sd_pair_id, h1, h2, path_id ...
     output_table_1 = ""
@@ -624,10 +466,6 @@ class MyExplorer(object):
             path_id += 1
           output_table_1 += "\n"
 
-    for i in range(len(self.sd_pair)-1):
-      for j in range(len(self.path_id_table)-1):
-        self.flow_dist_table[i][j] = []
-
     for pid in self.path_id_table:
       self._set_path_on_swtiches (pid, self.path_id_table[pid])
 
@@ -641,7 +479,7 @@ class MyExplorer(object):
     log.warning("Updating Starts.")
     self.update_step = 0
     self.config.read_config( INPUT_CONFIG_FILENAME )
-    self.update_timer = Timer(UPDATE_CHECK_STEP, self._update_step, started = True, recurring = True)
+    self.update_timer = Timer( UPDATE_CHECK_STEP, self._update_step, started = True, recurring = True )
 
 def launch ():
   # Generate a explorer to handle the events
