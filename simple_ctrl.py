@@ -19,7 +19,7 @@ import struct
 
 log = core.getLogger()
 SYSTEM_TIMEOUT = 10000
-UPDATE_CHECK_STEP = 50
+UPDATE_CHECK_STEP = 30
 LATENCY_MAX    = 1000000
 
 OUTPUT_PATH_FILENAME  = "paths"
