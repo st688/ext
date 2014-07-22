@@ -1,0 +1,2 @@
+server: iperf -s -u -i 0.5 -l 1k
+client: iperf -c 'serverIP' -u -b 100K -P 2 -t 80 -i 0.5 -l 1k
