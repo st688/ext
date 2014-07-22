@@ -19,7 +19,7 @@ import struct
 
 log = core.getLogger()
 SYSTEM_TIMEOUT = 10000
-UPDATE_CHECK_STEP = 10
+UPDATE_CHECK_STEP = 50
 LATENCY_MAX    = 1000000
 
 OUTPUT_PATH_FILENAME  = "paths"
@@ -43,9 +43,9 @@ class Configuration(object):
   def __init__(self):
     # time -> ( [sd id][path]: amount )
     self.config = []
-    self.now_config = defaultdict(lambda:defaultdict())
+    self.now_config = []
     # The real sending configuration. We need this because of the discretization effect from ports
-    self.real_config = defaultdict(lambda:defaultdict())
+    self.reset_real_config()
 
     # Has the config been set?
     self.config_set = False
@@ -59,7 +59,6 @@ class Configuration(object):
         t[k][l] = float(attr)
     
     self.config = t
-    self.real_config[m][l] = defaultdict(lambda:defaultdict())
     self.config_set = True
     self.change_step(0)
 
@@ -71,6 +70,25 @@ class Configuration(object):
     else:
       self.now_config = self.config[len(self.config)-1]
 
+  def reset_real_config(self):
+    self.real_config = copy.copy(self.now_config)
+    for k in range(len(self.real_config)):
+      self.real_config[k] = 0.0
+
+  def compute_real_config(self, path_id_list, flow_dist):
+    # update the weight of the path ids in the path id list based on flow_dist
+    num_flow = 0
+    # compute the total ports available for the paths in path_id_list
+    for key in path_id_list:
+      num_flow += len(flow_dist[key-1])
+
+    for key in path_id_list:
+      if num_flow == 0:
+        self.real_config[key-1] = 0.0
+      else:
+        self.real_config[key-1] = float(len(flow_dist[key-1]))/float(num_flow)
+
+"""
   def compute_real_config(self, sd_pair_id, num_flow, flow_dist):
     for key in self.real_config[sd_pair_id]:
       if num_flow == 0:
@@ -79,7 +97,7 @@ class Configuration(object):
         self.real_config[sd_pair_id][key] = 0
       else:
         self.real_config[sd_pair_id][key] = float(len(flow_dist[key]))/float(num_flow)
-
+"""
 class MyExplorer(object):
   def __init__ (self):
     log.warning("MyExplorer Constructed.")
@@ -195,7 +213,6 @@ class MyExplorer(object):
         if srcport not in self.sd_srcport_table[src][dst]:
           # New port discovered
           self.sd_srcport_table[src][dst].append(srcport)
-          #print(self.sd_srcport_table[src][dst])
 
     # Latency test packets handling
     if self.lat_test:
@@ -233,38 +250,41 @@ class MyExplorer(object):
 
       if dst in self.hosts:
         if ip and udpp and self.config.config_set:
-	  # If the packet is an IP/UDP packet
-          sd_id = self.sd_pair[src][dst]
-          id_list = self.sd_path_table[src][dst]s
-          real_split = self.config.real_config[sd_id]
-          cur_dist = self.flow_dist_table[sd_id]
+          # If the packet is an IP/UDP packet
+          id_list = self.sd_path_table[src][dst]
+          now_split = self.config.now_config
+          real_split = self.config.real_config
           # last one, in case not found
-          pid = len(id_list) - 1
-          if srcport in cur_dist.values:
-            pid = self.get_pid_by_srcport(sd_id, srcport)
-          else:
-            for k,x in enumerate(id_list):
-              if x > real_split[k] or x == 1:
-                pid = k + 1
+          pid = self.get_pid_by_srcport(id_list, srcport)
+          if pid is None:
+            # Not existed port, choose the last one as default
+            pid = id_list[len(id_list) - 1]
+            for k in id_list:
+              if now_split[k-1] > real_split[k-1] or now_split[k-1] == 1:
+                pid = k
                 # update flow_dist_table and real_config_table
-                self.flow_dist_table[sd_id][k].append(srcport)
-                num_flow = len(self.sd_srcport_table[src][dst])
-                self.config.compute_real_config(sd_id, num_flow, cur_dist)
+                self.flow_dist_table[k-1].append(srcport)
+                self.config.compute_real_config(id_list, self.flow_dist_table)
                 break
           log.warning("SD pair %i, pid %i", self.sd_pair[src][dst], pid)
 
         elif self.config.config_set:
           id_list = self.sd_path_table[src][dst]
           # last one, in case not found
-          pid = len(id_list) - 1
-          rand_num = random.random()
-          for k,x in enumerate(id_list):
-            rand_num -= x
+          pid = id_list[len(id_list) - 1]
+          
+          sum_of_all = 0
+          for x in id_list:
+            sum_of_all += self.config.now_config[x-1]
+          
+          rand_num = sum_of_all * random.random()
+          for x in id_list:
+            rand_num -= self.config.now_config[x-1]  # Since the path ID starts from 1, which is different from the index
             if rand_num < 0:
               # path_id should start from 1
-              pid = k + 1
+              pid = x
               break
-          log.warning("SD pair %i, pid %i", self.sd_pair[src][dst], pid)
+          log.warning("SD pair %i, pid %i", self.sd_pair[src][dst], pid) 
         else:
           # FIXME: path selection
           for sd_path_id in self.sd_path_table[src][dst]:
@@ -443,31 +463,29 @@ class MyExplorer(object):
     self.config.change_step(self.update_step)
 
     # redistribute flows based on new configuration
-    for i in self.config.real_config:
-      for j in self.config.real_config[i]:
-        self.config.real_config[i][j] = 0.0
-    for sd_id in self.flow_dist_table:
-      for path in self.flow_dist_table[sd_id]:
-        self.flow_dist_table[sd_id][path] = []
+    self.config.reset_real_config()
+    self.reset_flowdist_tables()
 
-    for src in self.sd_srcport_table:
-      for dst in self.sd_srcport_table[src]:
-        sd_id = self.sd_pair[src][dst]
-        id_list = self.config.now_config[sd_id]
-        real_split = self.config.real_config[sd_id]
-        cur_dist = self.flow_dist_table[sd_id]
+    # Compute for each port in all source destination pair
+    for src in self.sd_path_table:
+      for dst in self.sd_path_table[src]:
+        id_list = self.sd_path_table[src][dst]
+        now_split = self.config.now_config
+        real_split = self.config.real_config
         for srcport in self.sd_srcport_table[src][dst]:
-          # last one, in case not found
-          pid = len(id_list) - 1
-          for k,x in enumerate(id_list):
-            if x > real_split[k] or x == 1:
-              pid = k + 1
-              # update flow_dist_table and real_config_table
-              cur_dist[k].append(srcport)
-              num_flow = len(self.sd_srcport_table[src][dst])
-              self.config.compute_real_config(sd_id, num_flow, cur_dist)
-              # print 'compute_real_config', self.config.real_config[sd_id][k]
-              break
+          pid = self.get_pid_by_srcport(id_list, srcport)  # should be None
+          if pid is None:
+            # Not existed port, choose the last one as default
+            pid = id_list[len(id_list) - 1]
+            for k in id_list:
+              if now_split[k-1] > real_spslit[k-1] or now_split[k-1] == 1:
+                pid = k
+                # update flow_dist_table and real_config_table
+                self.flow_dist_table[k-1].append(srcport)
+                self.config.compute_real_config(id_list, self.flow_dist_table)
+                break
+
+          log.warning("pid %s", pid)
 
           srcip = self.srcip_table[src]
           dstip = self.dstip_table[dst]
@@ -523,13 +541,14 @@ class MyExplorer(object):
     self.dstip_table = defaultdict(lambda:[])
 
   def reset_flowdist_tables (self):
-    # [sd_pair_id][path_id-1] -> Srcport distribution
-    self.flow_dist_table = defaultdict(lambda:defaultdict(lambda:[]))
+    # [path_id-1] -> Srcports
+    self.flow_dist_table = defaultdict(lambda:[])
 
-  def get_pid_by_srcport (self, sd_pair_id, srcport):
-    for key, val in self.flow_dist_table[sd_pair_id].items():
-      if srcport in val:
-        return key
+  def get_pid_by_srcport (self, id_list, srcport):
+    # Match the srcport from cadidate path_id in id_list
+    for path_id in id_list:
+      if srcport in self.flow_dist_table[path_id - 1]:
+        return path_id
     return None
 
   def port_stat (self, dpid):
@@ -624,10 +643,6 @@ class MyExplorer(object):
             path_id += 1
           output_table_1 += "\n"
 
-    for i in range(len(self.sd_pair)-1):
-      for j in range(len(self.path_id_table)-1):
-        self.flow_dist_table[i][j] = []
-
     for pid in self.path_id_table:
       self._set_path_on_swtiches (pid, self.path_id_table[pid])
 
@@ -641,7 +656,10 @@ class MyExplorer(object):
     log.warning("Updating Starts.")
     self.update_step = 0
     self.config.read_config( INPUT_CONFIG_FILENAME )
-    self.update_timer = Timer(UPDATE_CHECK_STEP, self._update_step, started = True, recurring = True)
+    # Initial update
+    self.update_timer = Timer(UPDATE_CHECK_STEP, self._update_step, started = False, recurring = True)
+    self._update_step()
+    self.update_timer.start()
 
 def launch ():
   # Generate a explorer to handle the events
