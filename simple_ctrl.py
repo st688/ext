@@ -249,48 +249,48 @@ class MyExplorer(object):
           # log.warning("Packet Vid = %i", pid)
 
       if dst in self.hosts:
-        if ip and udpp and self.config.config_set:
-          # If the packet is an IP/UDP packet
-          id_list = self.sd_path_table[src][dst]
-          now_split = self.config.now_config
-          real_split = self.config.real_config
-          # last one, in case not found
-          pid = self.get_pid_by_srcport(id_list, srcport)
-          if pid is None:
-            # Not existed port, choose the last one as default
+        if self.config.config_set:
+          if ip and udpp:
+            # If the packet is an IP/UDP packet
+            id_list = self.sd_path_table[src][dst]
+            # last one, in case not found
+            pid = self.get_pid_by_srcport(id_list, srcport)
+            if pid is None:
+              # Not existed port, choose the last one as default
+              pid = id_list[len(id_list) - 1]
+              for k in id_list:
+                now_split = self.config.now_config
+                real_split = self.config.real_config
+                # log.warning("now %s real %s", now_split, real_split )
+                if now_split[k-1] > real_split[k-1] or now_split[k-1] == 1:
+                  pid = k
+                  break
+              # update flow_dist_table and real_config_table
+              self.flow_dist_table[pid-1].append(srcport)
+              self.config.compute_real_config(id_list, self.flow_dist_table)
+          else:
+            id_list = self.sd_path_table[src][dst]
+            # last one, in case not found
             pid = id_list[len(id_list) - 1]
-            for k in id_list:
-              if now_split[k-1] > real_split[k-1] or now_split[k-1] == 1:
-                pid = k
-                # update flow_dist_table and real_config_table
-                self.flow_dist_table[k-1].append(srcport)
-                self.config.compute_real_config(id_list, self.flow_dist_table)
+          
+            sum_of_all = 0
+            for x in id_list:
+              sum_of_all += self.config.now_config[x-1]
+            
+            rand_num = sum_of_all * random.random()
+            for x in id_list:
+              rand_num -= self.config.now_config[x-1]  # Since the path ID starts from 1, which is different from the index
+              if rand_num < 0:
+                # path_id should start from 1
+                pid = x
                 break
-          log.warning("SD pair %i, pid %i", self.sd_pair[src][dst], pid)
-
-        elif self.config.config_set:
-          id_list = self.sd_path_table[src][dst]
-          # last one, in case not found
-          pid = id_list[len(id_list) - 1]
-          
-          sum_of_all = 0
-          for x in id_list:
-            sum_of_all += self.config.now_config[x-1]
-          
-          rand_num = sum_of_all * random.random()
-          for x in id_list:
-            rand_num -= self.config.now_config[x-1]  # Since the path ID starts from 1, which is different from the index
-            if rand_num < 0:
-              # path_id should start from 1
-              pid = x
-              break
-          log.warning("SD pair %i, pid %i", self.sd_pair[src][dst], pid) 
+          # log.warning("SD pair %i, pid %i", self.sd_pair[src][dst], pid) 
         else:
           # FIXME: path selection
           for sd_path_id in self.sd_path_table[src][dst]:
             # There exists a path
             pid = sd_path_id
-            # log.warning("Packet Vid = %i", pid)
+            # log.warning("Packet Vid = %i", pid)        
 
       if ip and udpp:
         # FIXME: Do we need to modify the flow whenever the packet in?
@@ -300,7 +300,7 @@ class MyExplorer(object):
         msg.match.nw_dst = IPAddr(dstip)
         msg.match.nw_proto = 17
         msg.match.tp_src = srcport
-        log.warning(srcport)
+        # slog.warning("Add rule for port %s", srcport)
       else:
         msg = of.ofp_packet_out(data = event.ofp)
 
@@ -319,7 +319,9 @@ class MyExplorer(object):
           #msg.actions.append( of.ofp_action_output( port = of.OFPP_FLOOD ) )
           msg.actions.append( of.ofp_action_output( port = self.hadj[path[2]][path[1]] ) )
 
-      """
+      event.connection.send(msg)
+
+    """
       msg = of.ofp_packet_out( data = event.ofp )
       if pid != 0:
         # There exists a path
@@ -335,10 +337,7 @@ class MyExplorer(object):
           # last sw, forward to the host
           # msg.actions.append( of.ofp_action_output( port = of.OFPP_FLOOD ) )
           msg.actions.append( of.ofp_action_output( port = self.hadj[path[2]][path[1]] ) )
-      """
-
-      event.connection.send(msg)
-      #print msg
+    """
 
   def _handle_openflow_FlowStatsReceived (self, event):
     log.warning("Flow stats received.")
@@ -470,26 +469,26 @@ class MyExplorer(object):
     for src in self.sd_path_table:
       for dst in self.sd_path_table[src]:
         id_list = self.sd_path_table[src][dst]
-        now_split = self.config.now_config
-        real_split = self.config.real_config
         for srcport in self.sd_srcport_table[src][dst]:
           pid = self.get_pid_by_srcport(id_list, srcport)  # should be None
           if pid is None:
             # Not existed port, choose the last one as default
             pid = id_list[len(id_list) - 1]
             for k in id_list:
-              if now_split[k-1] > real_spslit[k-1] or now_split[k-1] == 1:
+              now_split = self.config.now_config
+              real_split = self.config.real_config
+              if now_split[k-1] > real_split[k-1] or now_split[k-1] == 1:
                 pid = k
-                # update flow_dist_table and real_config_table
-                self.flow_dist_table[k-1].append(srcport)
-                self.config.compute_real_config(id_list, self.flow_dist_table)
                 break
+            # update flow_dist_table and real_config_table
+            self.flow_dist_table[pid-1].append(srcport)
+            self.config.compute_real_config(id_list, self.flow_dist_table)
 
           log.warning("pid %s", pid)
 
           srcip = self.srcip_table[src]
           dstip = self.dstip_table[dst]
-          msg = of.ofp_flow_mod(command = of.OFPFC_MODIFY_STRICT)
+          msg = of.ofp_flow_mod( command = of.OFPFC_MODIFY_STRICT )
           msg.match.dl_type = 0x800
           msg.match.nw_src = IPAddr(srcip)
           msg.match.nw_dst = IPAddr(dstip)
@@ -509,8 +508,8 @@ class MyExplorer(object):
             msg.actions.append( of.ofp_action_output( port = self.hadj[path[2]][path[1]] ) )
           sw = path[1]
           core.openflow.sendToDPID(sw, msg)
-          #print msg
-          log.warning("SD pair %i, pid %i", self.sd_pair[src][dst], pid)
+          # print msg
+          # log.warning("SD pair %i, pid %i", self.sd_pair[src][dst], pid)
 
     log.warning("Update Step %i ...", self.update_step)
     self.update_step += 1
