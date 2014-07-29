@@ -19,7 +19,7 @@ import struct
 
 log = core.getLogger()
 SYSTEM_TIMEOUT = 10000
-UPDATE_CHECK_STEP = 30
+UPDATE_CHECK_STEP = 10
 LATENCY_MAX    = 1000000
 
 OUTPUT_PATH_FILENAME  = "paths"
@@ -44,6 +44,7 @@ class Configuration(object):
     # time -> ( [sd id][path]: amount )
     self.config = []
     self.now_config = []
+    self.next_time = 0
     # The real sending configuration. We need this because of the discretization effect from ports
     self.reset_real_config()
 
@@ -54,9 +55,11 @@ class Configuration(object):
     f = open(name).read()
     t = f.split('\n\n')
     for k,line in enumerate(t):
-      t[k] = line.split('\t')
-      for l,attr in enumerate(t[k]):
-        t[k][l] = float(attr)
+      t[k] = line.split('\n')
+      t[k][0] = t[k][0].split('\t')
+      t[k][1] = float(t[k][1])
+      for l,attr in enumerate(t[k][0]):
+        t[k][0][l] = float(attr)
     
     self.config = t
     self.config_set = True
@@ -64,11 +67,14 @@ class Configuration(object):
 
   def change_step(self, step):
     if step < 0:
-      self.now_config = self.config[0]
+      self.now_config = self.config[0][0]
+      self.next_time = self.config[0][1]
     elif step < len(self.config):
-      self.now_config = self.config[step]
+      self.now_config = self.config[step][0]
+      self.next_time = self.config[step][1]
     else:
-      self.now_config = self.config[len(self.config)-1]
+      self.now_config = self.config[len(self.config)-1][0]
+      self.next_time = self.config[len(self.config)-1][1]
 
   def reset_real_config(self):
     self.real_config = copy.copy(self.now_config)
@@ -458,8 +464,8 @@ class MyExplorer(object):
       self.update_timer.cancel()
       log.warning("Updating Ends.")
       return
-    self.update_timer._interval = UPDATE_CHECK_STEP
     self.config.change_step(self.update_step)
+    self.update_timer._next = time.time() +  self.config.next_time
 
     # redistribute flows based on new configuration
     self.config.reset_real_config()
@@ -488,7 +494,7 @@ class MyExplorer(object):
 
           srcip = self.srcip_table[src]
           dstip = self.dstip_table[dst]
-          msg = of.ofp_flow_mod( command = of.OFPFC_MODIFY_STRICT )
+          msg = of.ofp_flow_mod( command = of.OFPFC_MODIFY )
           msg.match.dl_type = 0x800
           msg.match.nw_src = IPAddr(srcip)
           msg.match.nw_dst = IPAddr(dstip)
@@ -656,7 +662,7 @@ class MyExplorer(object):
     self.update_step = 0
     self.config.read_config( INPUT_CONFIG_FILENAME )
     # Initial update
-    self.update_timer = Timer(UPDATE_CHECK_STEP, self._update_step, started = False, recurring = True)
+    self.update_timer = Timer(self.config.next_time, self._update_step, started = False, recurring = True)
     self._update_step()
     self.update_timer.start()
 
